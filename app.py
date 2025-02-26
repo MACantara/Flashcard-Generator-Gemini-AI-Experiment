@@ -160,7 +160,7 @@ class FlashcardGenerator:
         """Process a single chunk and yield flashcard events"""
         try:
             response = self.client.models.generate_content_stream(
-                model='gemini-2.0-flash-lite-preview-02-05',
+                model='gemini-2.0-flash-lite',
                 contents=[{'text': Config.FLASHCARD_GENERATION_PROMPT}, {'text': chunk}],
                 config=Config.FLASHCARD_CONFIG
             )
@@ -310,7 +310,7 @@ def generate_flashcards_stream(topic, content=None):
         
         # Stream flashcard generation
         for chunk in client.models.generate_content_stream(
-            model='gemini-2.0-flash-lite-preview-02-05',
+            model='gemini-2.0-flash-lite',
             contents=types.Part.from_text(text=prompt),
             config=Config.FLASHCARD_CONFIG
         ):
