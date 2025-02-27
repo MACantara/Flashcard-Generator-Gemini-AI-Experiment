@@ -443,14 +443,5 @@ def stream_generate():
 def home():
     return render_template('index.html')
 
-@app.route('/generate', methods=['POST'])
-def generate():
-    topic = request.form['topic']
-    try:
-        flashcards = generate_flashcards(topic)
-        return jsonify({'flashcards': flashcards})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
 if __name__ == '__main__':
     app.run(debug=True)
