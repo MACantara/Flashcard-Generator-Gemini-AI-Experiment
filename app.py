@@ -206,8 +206,8 @@ class FlashcardGenerator:
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in Config.ALLOWED_EXTENSIONS
 
-def process_file_content_stream(filepath):
-    """Process file content with streaming and coverage checks"""
+def process_file_content_batch(filepath):
+    """Process file content in batch mode instead of streaming"""
     # Initialize FlashcardGenerator for this request
     generator = FlashcardGenerator(client)
     
@@ -216,51 +216,38 @@ def process_file_content_stream(filepath):
         chunks = chunk_text(content)
         print(f"Total chunks to process: {len(chunks)}")
         
-        chunk_index = 0
+        all_flashcards = []
         
-        while chunk_index < len(chunks):
-            chunk = chunks[chunk_index]
-            current_batch = []
-            chunk_fully_covered = False
+        for i, chunk in enumerate(chunks):
+            # Process chunk
+            cards_for_chunk = []
             
-            while not chunk_fully_covered:
-                for event in generator.process_chunk(chunk):
-                    if event.type == 'flashcard':
-                        current_batch.append(event.content)
-                        yield event.to_sse()
-                    elif event.type == 'error':
-                        raise Exception(event.content)
-                
-                # Check coverage for this specific chunk
-                if current_batch:
-                    chunk_fully_covered = generator.check_coverage(chunk, current_batch)
-                    event_data = FlashcardEvent(
-                        'progress',
-                        f'Chunk {chunk_index + 1}/{len(chunks)} coverage: {"yes" if chunk_fully_covered else "no"}'
-                    )
-                    yield event_data.to_sse()
-                else:
-                    # If no cards were generated, consider chunk processed
-                    chunk_fully_covered = True
-            
-            # Update progress message
-            event_data = FlashcardEvent(
-                'progress',
-                f'Completed chunk {chunk_index + 1}/{len(chunks)} with {len(current_batch)} unique cards'
+            # Generate flashcards for this chunk
+            response = client.models.generate_content(
+                model='gemini-2.0-flash-lite',
+                contents=[{'text': Config.FLASHCARD_GENERATION_PROMPT}, {'text': chunk}],
+                config=Config.FLASHCARD_CONFIG
             )
-            yield event_data.to_sse()
             
-            chunk_index += 1
+            # Extract flashcards
+            raw_cards = response.text.split('\n')
+            for card in raw_cards:
+                if 'Q:' in card and '|' in card and 'A:' in card:
+                    cleaned = clean_flashcard_text(card)
+                    if cleaned and generator.unique_cards.add(cleaned):
+                        cards_for_chunk.append(cleaned)
+            
+            all_flashcards.extend(cards_for_chunk)
+            print(f"Processed chunk {i+1}/{len(chunks)}: {len(cards_for_chunk)} cards")
         
-        # Send completion event
-        event_data = FlashcardEvent(
-            'complete',
-            f'File processing complete! Generated {len(generator.unique_cards)} unique flashcards from {len(chunks)} chunks.'
-        )
-        yield event_data.to_sse()
+        return {
+            'flashcards': all_flashcards,
+            'count': len(generator.unique_cards),
+            'chunks': len(chunks)
+        }
         
     except Exception as e:
-        print(f"Error in process_file_content_stream: {str(e)}")
+        print(f"Error in process_file_content_batch: {str(e)}")
         raise
     finally:
         if os.path.exists(filepath):
@@ -288,58 +275,35 @@ def clean_flashcard_text(text: str) -> Optional[str]:
         
     return f"Q: {question} | A: {answer}"
 
-def generate_flashcards_stream(topic, content=None):
-    """Generate flashcards from topic or content"""
-    # Initialize generator for this request
+def generate_flashcards_batch(topic):
+    """Generate flashcards from topic in batch mode"""
     generator = FlashcardGenerator(client)
     
     try:
-        if content:
-            # Handle content-based generation
-            print("Processing file content:", content[:100])
-            cards = content.split('\n')
-            for card in cards:
-                cleaned = clean_flashcard_text(card)
-                if cleaned:
-                    event_data = FlashcardEvent('flashcard', cleaned)
-                    yield event_data.to_sse()
-                    
-            yield FlashcardEvent('complete', f'Generated {len(cards)} flashcards').to_sse()
-            return
-            
-        # Handle topic-based generation
+        # Formulate prompt
         prompt = Config.FLASHCARD_GENERATION_PROMPT + f"\nTopic: {topic}"
-        current_batch = []
-        buffer = ""
         
-        # Stream flashcard generation
-        for chunk in client.models.generate_content_stream(
+        # Generate flashcards
+        response = client.models.generate_content(
             model='gemini-2.0-flash-lite',
             contents=types.Part.from_text(text=prompt),
             config=Config.FLASHCARD_CONFIG
-        ):
-            if chunk.text:
-                buffer += chunk.text
-                cards = buffer.split('\n')
-                buffer = cards[-1]  # Keep incomplete card
-                
-                for card in cards[:-1]:
-                    cleaned = clean_flashcard_text(card)
-                    if cleaned and generator.unique_cards.add(cleaned):
-                        yield FlashcardEvent('flashcard', cleaned).to_sse()
-                        current_batch.append(cleaned)
+        )
         
-        # Process any remaining content
-        if buffer:
-            cleaned = clean_flashcard_text(buffer)
+        # Extract flashcards
+        all_flashcards = []
+        raw_cards = response.text.split('\n')
+        
+        for card in raw_cards:
+            cleaned = clean_flashcard_text(card)
             if cleaned and generator.unique_cards.add(cleaned):
-                yield FlashcardEvent('flashcard', cleaned).to_sse()
-                current_batch.append(cleaned)
+                all_flashcards.append(cleaned)
         
         # Check coverage
-        if current_batch:
+        has_coverage = False
+        if all_flashcards:
             coverage_prompt = Config.COVERAGE_CHECK_PROMPT.format(
-                content=f"Topic: {topic}\n\nFlashcards:\n{chr(10).join(current_batch)}"
+                content=f"Topic: {topic}\n\nFlashcards:\n{chr(10).join(all_flashcards)}"
             )
             
             coverage_response = client.models.generate_content(
@@ -348,17 +312,17 @@ def generate_flashcards_stream(topic, content=None):
                 config=Config.COVERAGE_CONFIG
             )
             
-            coverage_result = coverage_response.text.strip().lower()
-            yield FlashcardEvent('coverage', coverage_result).to_sse()
-            
-            if coverage_result == 'yes':
-                yield FlashcardEvent('complete', 'Coverage target achieved!').to_sse()
-            elif len(current_batch) >= Config.MAX_CARDS:
-                yield FlashcardEvent('complete', 'Maximum flashcard limit reached').to_sse()
+            has_coverage = coverage_response.text.strip().lower() == 'yes'
+        
+        return {
+            'flashcards': all_flashcards,
+            'count': len(generator.unique_cards),
+            'coverage': has_coverage
+        }
                 
     except Exception as e:
-        print(f"Error in generate_flashcards_stream: {str(e)}")
-        yield FlashcardEvent('error', str(e)).to_sse()
+        print(f"Error in generate_flashcards_batch: {str(e)}")
+        raise
 
 def init_app():
     """Initialize application requirements"""
@@ -405,6 +369,49 @@ def upload_file():
     except Exception as e:
         print(f"Upload error: {str(e)}")
         return jsonify({'error': 'Internal server error'}), 500
+
+@app.route('/generate', methods=['POST'])
+def generate():
+    """Generate flashcards from a topic"""
+    try:
+        data = request.get_json()
+        topic = data.get('topic')
+        
+        if not topic:
+            return jsonify({'error': 'Topic is required'}), 400
+            
+        result = generate_flashcards_batch(topic)
+        return jsonify(result)
+        
+    except Exception as e:
+        print(f"Error in generate: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/generate-from-file', methods=['POST'])
+def generate_from_file():
+    """Generate flashcards from uploaded file"""
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file uploaded'}), 400
+            
+        file = request.files['file']
+        if file.filename == '' or not allowed_file(file.filename):
+            return jsonify({'error': 'Invalid file type'}), 400
+
+        # Save file
+        filename = secure_filename(file.filename)
+        unique_filename = f"{uuid.uuid4()}_{filename}"
+        filepath = os.path.join(Config.UPLOAD_FOLDER, unique_filename)
+        os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
+        file.save(filepath)
+        
+        # Process file
+        result = process_file_content_batch(filepath)
+        return jsonify(result)
+        
+    except Exception as e:
+        print(f"Error in generate_from_file: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/stream-generate', methods=['GET'])
 def stream_generate():
