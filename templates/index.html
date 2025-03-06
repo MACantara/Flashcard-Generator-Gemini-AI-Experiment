@@ -97,77 +97,91 @@
             };
         }
 
+        function displayFlashcards(flashcards) {
+            $('#flashcards').empty();
+            $('#cardCount').text(flashcards.length);
+            $('#statsSection').removeClass('d-none');
+            
+            flashcards.forEach(cardContent => {
+                const card = parseFlashcard(cardContent);
+                if (card) {
+                    $('#flashcards').append(`
+                        <div class="col-md-6">
+                            <div class="flashcard card h-100">
+                                <div class="card-body">
+                                    <h5 class="card-title text-primary">
+                                        <i class="bi bi-question-circle"></i> 
+                                        ${card.question}
+                                    </h5>
+                                    <hr>
+                                    <p class="card-text">
+                                        <i class="bi bi-lightbulb"></i> 
+                                        ${card.answer}
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                    `);
+                }
+            });
+        }
+
         $('#generateForm').on('submit', function(e) {
             e.preventDefault();
             $('#loading').show();
             $('#flashcards').empty();
             $('#statsSection').addClass('d-none');
             
-            const topic = encodeURIComponent($('input[name="topic"]').val());
-            const eventSource = new EventSource(`/stream-generate?topic=${topic}`);
-            let cardCount = 0;
+            const topic = $('input[name="topic"]').val();
             
-            eventSource.onmessage = function(event) {
-                try {
-                    const data = JSON.parse(event.data);
-                    
-                    if (data.type === 'flashcard') {
-                        const card = parseFlashcard(data.content);
-                        if (card) {
-                            cardCount++;
-                            $('#cardCount').text(cardCount);
-                            $('#statsSection').removeClass('d-none');
-                            
-                            $('#flashcards').append(`
-                                <div class="col-md-6">
-                                    <div class="flashcard card h-100">
-                                        <div class="card-body">
-                                            <h5 class="card-title text-primary">
-                                                <i class="bi bi-question-circle"></i> 
-                                                ${card.question}
-                                            </h5>
-                                            <hr>
-                                            <p class="card-text">
-                                                <i class="bi bi-lightbulb"></i> 
-                                                ${card.answer}
-                                            </p>
-                                        </div>
-                                    </div>
-                                </div>
-                            `);
-                        }
-                    } else if (data.type === 'coverage') {
-                        $('#loading').html(`
-                            <div class="alert ${data.content === 'yes' ? 'alert-success' : 'alert-info'}">
-                                <i class="bi bi-info-circle"></i>
-                                Coverage check: ${data.content}
-                            </div>
-                        `);
-                    } else if (data.type === 'complete') {
-                        $('#loading').html(`
-                            <div class="alert alert-success">
-                                <i class="bi bi-check-circle"></i>
-                                ${data.content || 'Generation complete!'}
-                            </div>
-                        `);
-                        eventSource.close();
-                    }
-                } catch (error) {
-                    console.error('Error parsing SSE data:', error, event.data);
-                    $('#loading').hide();
-                    eventSource.close();
-                    alert('Error processing server response');
+            // Use fetch API to call the generate endpoint
+            fetch('/generate', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ topic: topic })
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
                 }
-            };
-            
-            eventSource.onerror = function() {
+                return response.json();
+            })
+            .then(data => {
                 $('#loading').hide();
-                eventSource.close();
-                alert('Error generating flashcards');
-            };
+                
+                // Display cards
+                displayFlashcards(data.flashcards);
+                
+                // Show coverage information
+                if (data.coverage) {
+                    $('#loading').html(`
+                        <div class="alert alert-success">
+                            <i class="bi bi-check-circle"></i>
+                            Coverage target achieved! Generated ${data.count} flashcards.
+                        </div>
+                    `).show();
+                } else {
+                    $('#loading').html(`
+                        <div class="alert alert-info">
+                            <i class="bi bi-info-circle"></i>
+                            Generated ${data.count} flashcards (partial coverage).
+                        </div>
+                    `).show();
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                $('#loading').html(`
+                    <div class="alert alert-danger">
+                        <i class="bi bi-exclamation-triangle"></i>
+                        Error: ${error.message}
+                    </div>
+                `).show();
+            });
         });
 
-        // Update file upload handling
         $('#fileForm').on('submit', function(e) {
             e.preventDefault();
             $('#loading').show();
@@ -175,98 +189,41 @@
             $('#statsSection').addClass('d-none');
             
             const formData = new FormData(this);
-            let eventSource;
             
-            // Upload file first
-            fetch('/upload-file', {
+            fetch('/generate-from-file', {
                 method: 'POST',
                 body: formData
-            }).then(async response => {
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.error || 'Upload failed');
-                if (data.error) throw new Error(data.error);
-                return data;
-            }).then(data => {
-                // Only create EventSource after successful upload
-                eventSource = new EventSource('/stream-generate?file=true');
-                handleEventSource(eventSource);
-            }).catch(error => {
-                console.error('Upload error:', error);
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
+                return response.json();
+            })
+            .then(data => {
+                $('#loading').hide();
+                
+                // Display cards
+                displayFlashcards(data.flashcards);
+                
+                // Show completion information
+                $('#loading').html(`
+                    <div class="alert alert-success">
+                        <i class="bi bi-check-circle"></i>
+                        File processing complete! Generated ${data.count} unique flashcards from ${data.chunks} chunks.
+                    </div>
+                `).show();
+            })
+            .catch(error => {
+                console.error('Error:', error);
                 $('#loading').html(`
                     <div class="alert alert-danger">
                         <i class="bi bi-exclamation-triangle"></i>
-                        ${error.message}
+                        Error: ${error.message}
                     </div>
-                `);
-                if (eventSource) eventSource.close();
+                `).show();
             });
         });
-
-        function handleEventSource(eventSource) {
-            let cardCount = 0;  // Initialize counter
-            
-            eventSource.onmessage = function(event) {
-                try {
-                    console.log('Received event:', event.data);  // Debug print
-                    const data = JSON.parse(event.data);
-                    
-                    if (data.type === 'flashcard') {
-                        const card = parseFlashcard(data.content);
-                        if (card) {
-                            cardCount++;  // Increment counter
-                            $('#cardCount').text(cardCount);
-                            $('#statsSection').removeClass('d-none');
-                            
-                            $('#flashcards').append(`
-                                <div class="col-md-6">
-                                    <div class="flashcard card h-100">
-                                        <div class="card-body">
-                                            <h5 class="card-title text-primary">
-                                                <i class="bi bi-question-circle"></i> 
-                                                ${card.question}
-                                            </h5>
-                                            <hr>
-                                            <p class="card-text">
-                                                <i class="bi bi-lightbulb"></i> 
-                                                ${card.answer}
-                                            </p>
-                                        </div>
-                                    </div>
-                                </div>
-                            `);
-                        } else {
-                            console.warn('Failed to parse card:', data.content);
-                        }
-                    } else if (data.type === 'progress') {
-                        $('#loading').html(`
-                            <div class="alert alert-info">
-                                <i class="bi bi-info-circle"></i>
-                                ${data.content}
-                            </div>
-                        `);
-                    } else if (data.type === 'complete') {
-                        $('#loading').html(`
-                            <div class="alert alert-success">
-                                <i class="bi bi-check-circle"></i>
-                                ${data.content}
-                            </div>
-                        `);
-                        eventSource.close();
-                    }
-                } catch (error) {
-                    console.error('Error parsing SSE data:', error, event.data);
-                    $('#loading').hide();
-                    eventSource.close();
-                    alert('Error processing server response');
-                }
-            };
-            
-            eventSource.onerror = function() {
-                $('#loading').hide();
-                eventSource.close();
-                alert('Error generating flashcards');
-            };
-        }
     </script>
 </body>
 </html>
