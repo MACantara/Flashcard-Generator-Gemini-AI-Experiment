@@ -67,8 +67,8 @@ class Config:
     ALLOWED_EXTENSIONS = {'txt', 'pdf'}
     # Use temporary directory for Vercel
     UPLOAD_FOLDER = os.path.join(tempfile.gettempdir(), 'flashcard_uploads')
-    CHUNK_SIZE = 50000
-    MAX_CARDS = 300
+    CHUNK_SIZE = 15000
+    MAX_CARDS = 100
     
     FLASHCARD_CONFIG = types.GenerateContentConfig(
         temperature=0.7,
@@ -85,8 +85,8 @@ class Config:
     )
     
     # Centralized Prompts
-    FLASHCARD_GENERATION_PROMPT = """
-    Create flashcards from this content.
+    FLASHCARD_GENERATION_PROMPT = f"""
+    Create {MAX_CARDS} flashcards from this content.
     Format EXACTLY as shown:
     Q: [question here] | A: [answer here]
 
