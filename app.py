@@ -13,6 +13,9 @@ import PyPDF2
 from typing import List, Dict, Generator, Optional
 from dataclasses import dataclass
 
+# For Vercel deployment
+import tempfile
+
 app = Flask(__name__)
 load_dotenv()
 
@@ -58,7 +61,8 @@ class FlashcardSet:
 class Config:
     """Application configuration"""
     ALLOWED_EXTENSIONS = {'txt', 'pdf'}
-    UPLOAD_FOLDER = 'temp_uploads'
+    # Use temporary directory for Vercel
+    UPLOAD_FOLDER = os.path.join(tempfile.gettempdir(), 'flashcard_uploads')
     CHUNK_SIZE = 50000
     MAX_CARDS = 300
     
@@ -360,7 +364,7 @@ def init_app():
     """Initialize application requirements"""
     if not os.path.exists(Config.UPLOAD_FOLDER):
         os.makedirs(Config.UPLOAD_FOLDER, exist_ok=True)
-    app.secret_key = os.urandom(24)
+    app.secret_key = os.getenv('SECRET_KEY', os.urandom(24))
 
 # Initialize app
 app = Flask(__name__)
@@ -443,5 +447,6 @@ def stream_generate():
 def home():
     return render_template('index.html')
 
+# Vercel requires the app to be named 'app'
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=False)
