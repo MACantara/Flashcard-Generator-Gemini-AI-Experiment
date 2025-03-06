@@ -21,8 +21,8 @@ def process_file_chunk_batch(client, file_key, chunk_index):
     
     try:
         # Generate flashcards for this chunk using the multiple-choice format
-        prompt = Config.generate_prompt_template(f"the following content: {chunk[:200]}...", 
-                                                batch_size=min(20, Config.DEFAULT_BATCH_SIZE))
+        prompt = Config.generate_prompt_template(f"the following content: {chunk}", 
+                                                batch_size=Config.DEFAULT_BATCH_SIZE)
         
         response = client.models.generate_content(
             model='gemini-2.0-flash-lite',
