@@ -160,34 +160,6 @@ class FlashcardGenerator:
         self.client = client
         self.unique_cards = FlashcardSet()
     
-    def process_chunk(self, chunk: str) -> Generator[FlashcardEvent, None, None]:
-        """Process a single chunk and yield flashcard events"""
-        try:
-            response = self.client.models.generate_content_stream(
-                model='gemini-2.0-flash-lite',
-                contents=[{'text': Config.FLASHCARD_GENERATION_PROMPT}, {'text': chunk}],
-                config=Config.FLASHCARD_CONFIG
-            )
-            
-            buffer = ""
-            for chunk in response:
-                if chunk.text:
-                    buffer += chunk.text
-                    cards = buffer.split('\n')
-                    buffer = cards[-1]  # Keep incomplete card
-                    
-                    for card in cards[:-1]:
-                        if 'Q:' in card and '|' in card and 'A:' in card:
-                            if self.unique_cards.add(card):  # Only add and emit if unique
-                                yield FlashcardEvent('flashcard', card.strip())
-            
-            # Process any remaining complete card in buffer
-            if buffer and 'Q:' in buffer and '|' in buffer and 'A:' in buffer:
-                yield FlashcardEvent('flashcard', buffer.strip())
-                
-        except Exception as e:
-            yield FlashcardEvent('error', str(e))
-    
     def check_coverage(self, chunk: str, cards: List[str]) -> bool:
         """Check if cards provide sufficient coverage"""
         coverage_prompt = Config.COVERAGE_CHECK_PROMPT.format(
@@ -412,43 +384,6 @@ def generate_from_file():
     except Exception as e:
         print(f"Error in generate_from_file: {str(e)}")
         return jsonify({'error': str(e)}), 500
-
-@app.route('/stream-generate', methods=['GET'])
-def stream_generate():
-    # Add CORS headers for SSE
-    headers = {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no'
-    }
-    
-    is_file_request = request.args.get('file') == 'true'
-    
-    if is_file_request and 'uploaded_file' in session:
-        filepath = session.pop('uploaded_file', None)
-        if filepath and os.path.exists(filepath):
-            try:
-                return Response(
-                    process_file_content_stream(filepath),
-                    mimetype='text/event-stream',
-                    headers=headers
-                )
-            except Exception as e:
-                print(f"Error in stream_generate: {str(e)}")
-                return jsonify({'error': str(e)}), 500
-        return jsonify({'error': 'No valid file found'}), 400
-    
-    # Handle regular topic-based generation
-    topic = request.args.get('topic')
-    if not topic:
-        return jsonify({'error': 'Topic is required'}), 400
-        
-    return Response(
-        generate_flashcards_stream(topic),
-        mimetype='text/event-stream',
-        headers=headers
-    )
 
 @app.route('/')
 def home():
