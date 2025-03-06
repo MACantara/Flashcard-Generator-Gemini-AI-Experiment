@@ -190,7 +190,6 @@
             $('#statsSection').addClass('d-none');
             
             const formData = new FormData(this);
-            let allFlashcards = [];
             let fileKey = null;
             
             // First, upload the file
@@ -214,7 +213,7 @@
                 `).show();
                 
                 // Start processing chunks
-                return processNextChunk(fileKey, allFlashcards);
+                return processNextChunk(fileKey);
             })
             .catch(error => {
                 console.error('Error:', error);
@@ -227,7 +226,7 @@
             });
         });
         
-        function processNextChunk(fileKey, allFlashcards) {
+        function processNextChunk(fileKey) {
             return fetch('/generate-chunk', {
                 method: 'POST',
                 headers: {
@@ -242,14 +241,12 @@
             .then(data => {
                 if (data.error) throw new Error(data.error);
                 
-                // Add new flashcards
-                if (data.flashcards) {
-                    allFlashcards = allFlashcards.concat(data.flashcards);
-                    
-                    // Update UI
-                    displayFlashcards(allFlashcards);
-                    
-                    // Update progress
+                // Update UI with the new flashcards
+                if (data.flashcards && data.flashcards.length > 0) {
+                    // Fetch the full flashcard set to display
+                    updateFlashcardDisplay(fileKey, data.chunk_index, data.total_chunks);
+                } else {
+                    // Update progress even when no new cards were generated
                     const progress = Math.round((data.chunk_index + 1) / data.total_chunks * 100);
                     $('#loading').html(`
                         <div class="alert alert-info">
@@ -262,15 +259,36 @@
                 // If more chunks to process
                 if (!data.is_complete) {
                     // Check coverage
-                    return checkCoverage(fileKey, allFlashcards);
+                    return checkCoverage(fileKey);
                 } else {
                     // Final coverage check
-                    return checkCoverage(fileKey, allFlashcards, true);
+                    return checkCoverage(fileKey, true);
                 }
             });
         }
         
-        function checkCoverage(fileKey, allFlashcards, isFinal = false) {
+        function updateFlashcardDisplay(fileKey, currentIndex, totalChunks) {
+            return fetch(`/all-file-flashcards?file_key=${fileKey}`)
+                .then(response => {
+                    if (!response.ok) throw new Error('Failed to fetch flashcards');
+                    return response.json();
+                })
+                .then(data => {
+                    // Display all flashcards
+                    displayFlashcards(data.flashcards);
+                    
+                    // Update progress indicator
+                    const progress = Math.round((currentIndex + 1) / totalChunks * 100);
+                    $('#loading').html(`
+                        <div class="alert alert-info">
+                            <i class="bi bi-info-circle"></i>
+                            Processing file... (${progress}%) - Generated ${data.count} flashcards so far
+                        </div>
+                    `).show();
+                });
+        }
+        
+        function checkCoverage(fileKey, isFinal = false) {
             return fetch('/check-coverage', {
                 method: 'POST',
                 headers: {
@@ -290,14 +308,14 @@
                     $('#loading').html(`
                         <div class="alert alert-success">
                             <i class="bi bi-check-circle"></i>
-                            Processing complete! Generated ${allFlashcards.length} flashcards.
+                            Processing complete! Generated ${data.count} flashcards.
                             ${data.coverage ? ' Coverage is sufficient.' : ' Coverage may be partial.'}
                         </div>
                     `).show();
                     return Promise.resolve();
                 } else {
                     // Continue processing more chunks
-                    return processNextChunk(fileKey, allFlashcards);
+                    return processNextChunk(fileKey);
                 }
             });
         }

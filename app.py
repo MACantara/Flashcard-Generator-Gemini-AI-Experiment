@@ -17,6 +17,8 @@ from dataclasses import dataclass
 import tempfile
 import hashlib
 import time
+import pickle
+import shutil
 
 app = Flask(__name__)
 load_dotenv()
@@ -318,24 +320,48 @@ class ProcessingState:
     @staticmethod
     def init_file_state(filepath):
         """Initialize processing state for a file"""
-        content = FileProcessor.read_content(filepath)
-        chunks = chunk_text(content)
-        file_key = ProcessingState.get_file_key(filepath)
-        
-        state = {
-            'filepath': filepath,
-            'chunks': chunks,
-            'total_chunks': len(chunks),
-            'processed_chunks': [],
-            'current_index': 0,
-            'all_flashcards': [],
-            'is_complete': False,
-            'has_coverage': False,
-            'last_updated': time.time()
-        }
-        
-        session[file_key] = state
-        return file_key
+        try:
+            # Create a unique directory for this file processing
+            file_key = ProcessingState.get_file_key(filepath)
+            state_dir = os.path.join(Config.UPLOAD_FOLDER, file_key)
+            os.makedirs(state_dir, exist_ok=True)
+            
+            # Read content and divide into chunks
+            content = FileProcessor.read_content(filepath)
+            chunks = chunk_text(content)
+            
+            # Store chunks in separate files
+            chunks_dir = os.path.join(state_dir, "chunks")
+            os.makedirs(chunks_dir, exist_ok=True)
+            
+            for i, chunk in enumerate(chunks):
+                chunk_file = os.path.join(chunks_dir, f"chunk_{i}.txt")
+                with open(chunk_file, 'w', encoding='utf-8') as f:
+                    f.write(chunk)
+            
+            # Create a lightweight state object for the session
+            state = {
+                'file_key': file_key,
+                'state_dir': state_dir,
+                'total_chunks': len(chunks),
+                'processed_chunks': [],
+                'current_index': 0,
+                'all_flashcards': [],
+                'is_complete': False,
+                'has_coverage': False,
+                'last_updated': time.time()
+            }
+            
+            # Store lightweight state in session
+            session[file_key] = state
+            
+            return file_key
+        except Exception as e:
+            print(f"Error in init_file_state: {str(e)}")
+            # Clean up any partial files
+            if 'state_dir' in locals() and os.path.exists(state_dir):
+                shutil.rmtree(state_dir, ignore_errors=True)
+            raise
     
     @staticmethod
     def get_state(file_key):
@@ -343,16 +369,70 @@ class ProcessingState:
         return session.get(file_key)
     
     @staticmethod
+    def get_chunk(file_key, chunk_index):
+        """Get a specific chunk content"""
+        state = ProcessingState.get_state(file_key)
+        if not state:
+            return None
+        
+        chunk_file = os.path.join(state['state_dir'], "chunks", f"chunk_{chunk_index}.txt")
+        if not os.path.exists(chunk_file):
+            return None
+            
+        with open(chunk_file, 'r', encoding='utf-8') as f:
+            return f.read()
+    
+    @staticmethod
     def update_state(file_key, updates):
         """Update processing state for a file"""
         if file_key in session:
             state = session[file_key]
+            
+            # Handle flashcards separately to prevent session bloat
+            if 'all_flashcards' in updates:
+                flashcards = updates.pop('all_flashcards')
+                # Save flashcards to file
+                flashcards_file = os.path.join(state['state_dir'], "flashcards.pkl")
+                with open(flashcards_file, 'wb') as f:
+                    pickle.dump(flashcards, f)
+                
+            # Update other state properties
             for key, value in updates.items():
                 state[key] = value
+                
             state['last_updated'] = time.time()
             session[file_key] = state
             return True
         return False
+    
+    @staticmethod
+    def get_all_flashcards(file_key):
+        """Get all flashcards for a file"""
+        state = ProcessingState.get_state(file_key)
+        if not state:
+            return []
+            
+        flashcards_file = os.path.join(state['state_dir'], "flashcards.pkl")
+        if os.path.exists(flashcards_file):
+            with open(flashcards_file, 'rb') as f:
+                return pickle.load(f)
+        return []
+    
+    @staticmethod
+    def append_flashcards(file_key, new_flashcards):
+        """Append new flashcards to existing ones"""
+        state = ProcessingState.get_state(file_key)
+        if not state:
+            return False
+            
+        current = ProcessingState.get_all_flashcards(file_key)
+        updated = current + new_flashcards
+        
+        flashcards_file = os.path.join(state['state_dir'], "flashcards.pkl")
+        with open(flashcards_file, 'wb') as f:
+            pickle.dump(updated, f)
+        
+        return True
     
     @staticmethod
     def cleanup_old_states(max_age=3600):  # 1 hour
@@ -366,9 +446,10 @@ class ProcessingState:
                     keys_to_remove.append(key)
         
         for key in keys_to_remove:
-            if session.get(key, {}).get('filepath') and os.path.exists(session[key]['filepath']):
+            state = session[key]
+            if 'state_dir' in state and os.path.exists(state['state_dir']):
                 try:
-                    os.remove(session[key]['filepath'])
+                    shutil.rmtree(state['state_dir'], ignore_errors=True)
                 except:
                     pass
             del session[key]
@@ -376,12 +457,16 @@ class ProcessingState:
 def process_file_chunk_batch(file_key, chunk_index):
     """Process a single chunk of a file in batch mode"""
     state = ProcessingState.get_state(file_key)
-    if not state or state['is_complete'] or chunk_index >= len(state['chunks']):
+    if not state or state['is_complete'] or chunk_index >= state['total_chunks']:
         return {'error': 'Invalid state or chunk index'}
+    
+    # Get chunk content
+    chunk = ProcessingState.get_chunk(file_key, chunk_index)
+    if not chunk:
+        return {'error': f'Cannot read chunk {chunk_index}'}
     
     # Initialize generator for this chunk
     generator = FlashcardGenerator(client)
-    chunk = state['chunks'][chunk_index]
     
     try:
         # Generate flashcards for this chunk
@@ -402,9 +487,10 @@ def process_file_chunk_batch(file_key, chunk_index):
                     chunk_flashcards.append(cleaned)
         
         # Update state
-        all_cards = state['all_flashcards'] + chunk_flashcards
+        ProcessingState.append_flashcards(file_key, chunk_flashcards)
+        
+        # Update processing state
         state['processed_chunks'].append(chunk_index)
-        state['all_flashcards'] = all_cards
         state['current_index'] = chunk_index + 1
         
         if len(state['processed_chunks']) == state['total_chunks']:
@@ -412,9 +498,12 @@ def process_file_chunk_batch(file_key, chunk_index):
         
         ProcessingState.update_state(file_key, state)
         
+        # Get total flashcards count
+        all_flashcards = ProcessingState.get_all_flashcards(file_key)
+        
         return {
             'flashcards': chunk_flashcards,
-            'all_flashcards_count': len(all_cards),
+            'all_flashcards_count': len(all_flashcards),
             'chunk_index': chunk_index,
             'total_chunks': state['total_chunks'],
             'is_complete': state['is_complete']
@@ -430,15 +519,22 @@ def check_file_coverage(file_key):
     if not state:
         return {'error': 'Invalid file key'}
     
-    if len(state['all_flashcards']) == 0:
+    all_flashcards = ProcessingState.get_all_flashcards(file_key)
+    if not all_flashcards:
         return {'coverage': False, 'message': 'No flashcards generated yet'}
     
     try:
         # Use a sample of content to check coverage
-        content_sample = "\n".join([state['chunks'][i] for i in state['processed_chunks'][:5]])
+        sample_chunks = []
+        for i in sorted(state['processed_chunks'])[:min(5, len(state['processed_chunks']))]:
+            chunk = ProcessingState.get_chunk(file_key, i)
+            if chunk:
+                sample_chunks.append(chunk)
+        
+        content_sample = "\n".join(sample_chunks)
         
         coverage_prompt = Config.COVERAGE_CHECK_PROMPT.format(
-            content=f"Content sample:\n{content_sample}\n\nFlashcards:\n{chr(10).join(state['all_flashcards'][:100])}"
+            content=f"Content sample:\n{content_sample}\n\nFlashcards:\n{chr(10).join(all_flashcards[:100])}"
         )
         
         coverage_response = client.models.generate_content(
@@ -468,11 +564,13 @@ def get_file_state(file_key):
     if not state:
         return {'error': 'Invalid file key'}
     
+    all_flashcards = ProcessingState.get_all_flashcards(file_key)
+    
     return {
         'total_chunks': state['total_chunks'],
         'processed_chunks': len(state['processed_chunks']),
         'current_index': state['current_index'],
-        'flashcard_count': len(state['all_flashcards']),
+        'flashcard_count': len(all_flashcards),
         'is_complete': state['is_complete'],
         'has_coverage': state['has_coverage'],
         'next_chunk': state['current_index'] if state['current_index'] < state['total_chunks'] else None
@@ -623,6 +721,21 @@ def file_state():
     
     result = get_file_state(file_key)
     return jsonify(result)
+
+@app.route('/all-file-flashcards', methods=['GET'])
+def all_file_flashcards():
+    """Get all flashcards for a file"""
+    file_key = request.args.get('file_key')
+    
+    if not file_key:
+        return jsonify({'error': 'File key is required'}), 400
+    
+    all_flashcards = ProcessingState.get_all_flashcards(file_key)
+    
+    return jsonify({
+        'flashcards': all_flashcards,
+        'count': len(all_flashcards)
+    })
 
 @app.route('/')
 def home():
