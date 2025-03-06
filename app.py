@@ -84,17 +84,6 @@ class Config:
         )
     )
     
-    COVERAGE_CONFIG = types.GenerateContentConfig(
-        temperature=0.1,
-        top_p=0.95,
-        max_output_tokens=50,
-        system_instruction=(
-            "You are an educational content evaluator. "
-            "Analyze the flashcards and respond ONLY with 'yes' or 'no' based on topic coverage. "
-            "Answer 'yes' if the flashcards cover 90-100% of the content, 'no' otherwise."
-        )
-    )
-    
     # Centralized Prompts
     FLASHCARD_GENERATION_PROMPT = """
     Create flashcards from this content.
@@ -103,14 +92,6 @@ class Config:
 
     Each flashcard must be on its own line.
     Do not include any other text.
-    """
-
-    COVERAGE_CHECK_PROMPT = """
-    Evaluate if these flashcards provide comprehensive coverage:
-
-    {content}
-
-    Answer ONLY with 'yes' or 'no'.
     """
 
 # Utilities
@@ -163,21 +144,6 @@ class FlashcardGenerator:
     def __init__(self, client):
         self.client = client
         self.unique_cards = FlashcardSet()
-    
-    def check_coverage(self, chunk: str, cards: List[str]) -> bool:
-        """Check if cards provide sufficient coverage"""
-        coverage_prompt = Config.COVERAGE_CHECK_PROMPT.format(
-            content=f"Content chunk:\n{chunk}\n\nFlashcards:\n{chr(10).join(cards)}"
-        )
-        
-        coverage_response = self.client.models.generate_content(
-            model='gemini-2.0-flash',
-            contents=types.Part.from_text(text=coverage_prompt),
-            config=Config.COVERAGE_CONFIG
-        )
-        
-        coverage_result = coverage_response.text.strip().lower()
-        return coverage_result == 'yes'
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in Config.ALLOWED_EXTENSIONS
@@ -275,25 +241,9 @@ def generate_flashcards_batch(topic):
             if cleaned and generator.unique_cards.add(cleaned):
                 all_flashcards.append(cleaned)
         
-        # Check coverage
-        has_coverage = False
-        if all_flashcards:
-            coverage_prompt = Config.COVERAGE_CHECK_PROMPT.format(
-                content=f"Topic: {topic}\n\nFlashcards:\n{chr(10).join(all_flashcards)}"
-            )
-            
-            coverage_response = client.models.generate_content(
-                model='gemini-2.0-flash',
-                contents=types.Part.from_text(text=coverage_prompt),
-                config=Config.COVERAGE_CONFIG
-            )
-            
-            has_coverage = coverage_response.text.strip().lower() == 'yes'
-        
         return {
             'flashcards': all_flashcards,
-            'count': len(generator.unique_cards),
-            'coverage': has_coverage
+            'count': len(generator.unique_cards)
         }
                 
     except Exception as e:
@@ -348,7 +298,6 @@ class ProcessingState:
                 'current_index': 0,
                 'all_flashcards': [],
                 'is_complete': False,
-                'has_coverage': False,
                 'last_updated': time.time()
             }
             
@@ -513,51 +462,6 @@ def process_file_chunk_batch(file_key, chunk_index):
         print(f"Error processing chunk {chunk_index}: {str(e)}")
         return {'error': str(e)}
 
-def check_file_coverage(file_key):
-    """Check if the current flashcards provide sufficient coverage"""
-    state = ProcessingState.get_state(file_key)
-    if not state:
-        return {'error': 'Invalid file key'}
-    
-    all_flashcards = ProcessingState.get_all_flashcards(file_key)
-    if not all_flashcards:
-        return {'coverage': False, 'message': 'No flashcards generated yet'}
-    
-    try:
-        # Use a sample of content to check coverage
-        sample_chunks = []
-        for i in sorted(state['processed_chunks'])[:min(5, len(state['processed_chunks']))]:
-            chunk = ProcessingState.get_chunk(file_key, i)
-            if chunk:
-                sample_chunks.append(chunk)
-        
-        content_sample = "\n".join(sample_chunks)
-        
-        coverage_prompt = Config.COVERAGE_CHECK_PROMPT.format(
-            content=f"Content sample:\n{content_sample}\n\nFlashcards:\n{chr(10).join(all_flashcards[:100])}"
-        )
-        
-        coverage_response = client.models.generate_content(
-            model='gemini-2.0-flash',
-            contents=types.Part.from_text(text=coverage_prompt),
-            config=Config.COVERAGE_CONFIG
-        )
-        
-        has_coverage = coverage_response.text.strip().lower() == 'yes'
-        
-        # Update state
-        state['has_coverage'] = has_coverage
-        ProcessingState.update_state(file_key, state)
-        
-        return {
-            'coverage': has_coverage,
-            'message': 'Coverage is sufficient' if has_coverage else 'Additional flashcards needed'
-        }
-        
-    except Exception as e:
-        print(f"Error checking coverage: {str(e)}")
-        return {'error': str(e)}
-
 def get_file_state(file_key):
     """Get current processing state for a file"""
     state = ProcessingState.get_state(file_key)
@@ -572,7 +476,6 @@ def get_file_state(file_key):
         'current_index': state['current_index'],
         'flashcard_count': len(all_flashcards),
         'is_complete': state['is_complete'],
-        'has_coverage': state['has_coverage'],
         'next_chunk': state['current_index'] if state['current_index'] < state['total_chunks'] else None
     }
 
@@ -694,23 +597,6 @@ def generate_chunk():
         
     except Exception as e:
         print(f"Error in generate_chunk: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/check-coverage', methods=['POST'])
-def check_coverage():
-    """Check if the current flashcards provide sufficient coverage"""
-    try:
-        data = request.get_json()
-        file_key = data.get('file_key')
-        
-        if not file_key:
-            return jsonify({'error': 'File key is required'}), 400
-        
-        result = check_file_coverage(file_key)
-        return jsonify(result)
-        
-    except Exception as e:
-        print(f"Error in check_coverage: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/file-state', methods=['GET'])

@@ -154,22 +154,13 @@
                 // Display cards
                 displayFlashcards(data.flashcards);
                 
-                // Show coverage information
-                if (data.coverage) {
-                    $('#loading').html(`
-                        <div class="alert alert-success">
-                            <i class="bi bi-check-circle"></i>
-                            Coverage target achieved! Generated ${data.count} flashcards.
-                        </div>
-                    `).show();
-                } else {
-                    $('#loading').html(`
-                        <div class="alert alert-info">
-                            <i class="bi bi-info-circle"></i>
-                            Generated ${data.count} flashcards (partial coverage).
-                        </div>
-                    `).show();
-                }
+                // Show completion message
+                $('#loading').html(`
+                    <div class="alert alert-success">
+                        <i class="bi bi-check-circle"></i>
+                        Generated ${data.count} flashcards.
+                    </div>
+                `).show();
             })
             .catch(error => {
                 console.error('Error:', error);
@@ -270,51 +261,33 @@
                 // Update UI with the new flashcards
                 return updateFlashcardDisplay(fileKey, data.chunk_index, data.total_chunks)
                     .then(() => {
-                        // Always continue to next chunk until all chunks are processed,
-                        // regardless of coverage
+                        // Continue to next chunk or complete
                         if (!data.is_complete) {
                             return processNextChunk(fileKey);
                         } else {
-                            // Only check coverage after all chunks are processed
-                            return finalCoverageCheck(fileKey);
+                            // Display completion message
+                            return showCompletionMessage(fileKey);
                         }
                     });
             });
         }
 
-        // Add a new function to check coverage only when all chunks are done
-        function finalCoverageCheck(fileKey) {
-            return fetch('/check-coverage', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ file_key: fileKey })
-            })
-            .then(response => {
-                if (!response.ok) throw new Error('Coverage check failed');
-                return response.json();
-            })
-            .then(data => {
-                // Get flashcard count for final UI update
-                return fetch(`/all-file-flashcards?file_key=${fileKey}`)
-                    .then(response => {
-                        if (!response.ok) throw new Error('Failed to fetch flashcards');
-                        return response.json();
-                    })
-                    .then(countData => {
-                        if (data.error) throw new Error(data.error);
-                        
-                        $('#loading').html(`
-                            <div class="alert alert-success">
-                                <i class="bi bi-check-circle"></i>
-                                Processing complete! Generated ${countData.count} flashcards.
-                                ${data.coverage ? ' Coverage is sufficient.' : ' Coverage may be partial.'}
-                            </div>
-                        `).show();
-                        return Promise.resolve();
-                    });
-            });
+        // Replace finalCoverageCheck with simple completion message
+        function showCompletionMessage(fileKey) {
+            return fetch(`/all-file-flashcards?file_key=${fileKey}`)
+                .then(response => {
+                    if (!response.ok) throw new Error('Failed to fetch flashcards');
+                    return response.json();
+                })
+                .then(countData => {
+                    $('#loading').html(`
+                        <div class="alert alert-success">
+                            <i class="bi bi-check-circle"></i>
+                            Processing complete! Generated ${countData.count} flashcards.
+                        </div>
+                    `).show();
+                    return Promise.resolve();
+                });
         }
 
         function updateFlashcardDisplay(fileKey, currentIndex, totalChunks) {
@@ -341,33 +314,6 @@
                         </div>
                     `).show();
                 });
-        }
-        
-        function checkCoverage(fileKey, isFinal = false) {
-            // Make sure we have a valid file key before proceeding
-            if (!fileKey) {
-                console.error("Invalid file key");
-                $('#loading').html(`
-                    <div class="alert alert-danger">
-                        <i class="bi bi-exclamation-triangle"></i>
-                        Error: Invalid file key
-                    </div>
-                `).show();
-                return Promise.reject(new Error("Invalid file key"));
-            }
-
-            // Fetch coverage information
-            return fetch('/check-coverage', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ file_key: fileKey })
-            })
-            .then(response => {
-                if (!response.ok) throw new Error('Coverage check failed');
-                return response.json();
-            });
         }
     </script>
 </body>
