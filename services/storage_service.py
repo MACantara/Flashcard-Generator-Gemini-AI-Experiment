@@ -132,6 +132,40 @@ class ProcessingState:
         return True
     
     @staticmethod
+    def append_mc_flashcards(file_key, new_mc_flashcards):
+        """Append multiple-choice flashcards to existing ones"""
+        state = ProcessingState.get_state(file_key)
+        if not state:
+            return False
+            
+        mc_file = os.path.join(state['state_dir'], "mc_flashcards.pkl")
+        
+        current = []
+        if os.path.exists(mc_file):
+            with open(mc_file, 'rb') as f:
+                current = pickle.load(f)
+                
+        updated = current + new_mc_flashcards
+        
+        with open(mc_file, 'wb') as f:
+            pickle.dump(updated, f)
+        
+        return True
+    
+    @staticmethod
+    def get_mc_flashcards(file_key):
+        """Get all multiple-choice flashcards for a file"""
+        state = ProcessingState.get_state(file_key)
+        if not state:
+            return []
+            
+        mc_file = os.path.join(state['state_dir'], "mc_flashcards.pkl")
+        if os.path.exists(mc_file):
+            with open(mc_file, 'rb') as f:
+                return pickle.load(f)
+        return []
+    
+    @staticmethod
     def cleanup_old_states(max_age=3600):  # 1 hour
         """Remove old processing states"""
         now = time.time()

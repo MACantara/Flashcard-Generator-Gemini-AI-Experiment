@@ -84,6 +84,24 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
+        // Add function to parse multiple-choice flashcards
+        function parseMCFlashcard(card) {
+            return {
+                question: card.q,
+                correctAnswer: card.ca,
+                incorrectAnswers: card.ia || [],
+                allOptions: function() {
+                    // Randomize the order of answers
+                    const options = [this.correctAnswer, ...this.incorrectAnswers];
+                    for (let i = options.length - 1; i > 0; i--) {
+                        const j = Math.floor(Math.random() * (i + 1));
+                        [options[i], options[j]] = [options[j], options[i]];
+                    }
+                    return options;
+                }
+            };
+        }
+
         function parseFlashcard(content) {
             // Extract content between Q: and A: markers
             const qMatch = content.match(/Q:\s*(.*?)\s*\|/);
@@ -97,33 +115,112 @@
             };
         }
 
-        function displayFlashcards(flashcards) {
+        function displayFlashcards(flashcards, mcData) {
             $('#flashcards').empty();
             $('#cardCount').text(flashcards.length);
             $('#statsSection').removeClass('d-none');
             
-            flashcards.forEach(cardContent => {
-                const card = parseFlashcard(cardContent);
-                if (card) {
+            // Check if we have multiple-choice data
+            if (mcData && mcData.length > 0) {
+                // Display multiple-choice flashcards
+                mcData.forEach((card, index) => {
+                    const mcCard = parseMCFlashcard(card);
+                    const options = mcCard.allOptions();
+                    
+                    let optionsHtml = '';
+                    options.forEach((option, i) => {
+                        optionsHtml += `
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio" name="mc-${index}" 
+                                       id="opt-${index}-${i}" value="${option}">
+                                <label class="form-check-label" for="opt-${index}-${i}">
+                                    ${option}
+                                </label>
+                            </div>
+                        `;
+                    });
+                    
+                    // Add a button to reveal the correct answer
+                    const revealBtnHtml = `
+                        <button class="btn btn-sm btn-outline-primary mt-3 reveal-btn" 
+                                data-answer="${mcCard.correctAnswer}" 
+                                data-card-index="${index}">Reveal Answer</button>
+                        <div class="answer-feedback mt-2" id="feedback-${index}" style="display: none;"></div>
+                    `;
+                    
                     $('#flashcards').append(`
-                        <div class="col-md-6">
+                        <div class="col-md-6 mb-4">
                             <div class="flashcard card h-100">
                                 <div class="card-body">
                                     <h5 class="card-title text-primary">
                                         <i class="bi bi-question-circle"></i> 
-                                        ${card.question}
+                                        ${mcCard.question}
                                     </h5>
                                     <hr>
-                                    <p class="card-text">
-                                        <i class="bi bi-lightbulb"></i> 
-                                        ${card.answer}
-                                    </p>
+                                    <div class="options">
+                                        ${optionsHtml}
+                                    </div>
+                                    ${revealBtnHtml}
                                 </div>
                             </div>
                         </div>
                     `);
-                }
-            });
+                });
+                
+                // Add event listeners for the reveal buttons
+                $('.reveal-btn').on('click', function() {
+                    const correctAnswer = $(this).data('answer');
+                    const cardIndex = $(this).data('card-index');
+                    const selectedOption = $(`input[name="mc-${cardIndex}"]:checked`).val();
+                    
+                    const feedbackEl = $(`#feedback-${cardIndex}`).show();
+                    
+                    if (selectedOption === correctAnswer) {
+                        feedbackEl.html(`
+                            <div class="alert alert-success mb-0">
+                                <i class="bi bi-check-circle"></i> Correct!
+                            </div>
+                        `);
+                    } else if (selectedOption) {
+                        feedbackEl.html(`
+                            <div class="alert alert-danger mb-0">
+                                <i class="bi bi-x-circle"></i> Incorrect. The correct answer is: ${correctAnswer}
+                            </div>
+                        `);
+                    } else {
+                        feedbackEl.html(`
+                            <div class="alert alert-info mb-0">
+                                <i class="bi bi-info-circle"></i> The correct answer is: ${correctAnswer}
+                            </div>
+                        `);
+                    }
+                });
+                
+            } else {
+                // Fall back to standard flashcard display
+                flashcards.forEach(cardContent => {
+                    const card = parseFlashcard(cardContent);
+                    if (card) {
+                        $('#flashcards').append(`
+                            <div class="col-md-6">
+                                <div class="flashcard card h-100">
+                                    <div class="card-body">
+                                        <h5 class="card-title text-primary">
+                                            <i class="bi bi-question-circle"></i> 
+                                            ${card.question}
+                                        </h5>
+                                        <hr>
+                                        <p class="card-text">
+                                            <i class="bi bi-lightbulb"></i> 
+                                            ${card.answer}
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                        `);
+                    }
+                });
+            }
         }
 
         $('#generateForm').on('submit', function(e) {
@@ -151,8 +248,8 @@
             .then(data => {
                 $('#loading').hide();
                 
-                // Display cards
-                displayFlashcards(data.flashcards);
+                // Display cards - passing both standard format and multiple-choice data if available
+                displayFlashcards(data.flashcards, data.mc_data);
                 
                 // Show completion message
                 $('#loading').html(`
@@ -291,14 +388,15 @@
         }
 
         function updateFlashcardDisplay(fileKey, currentIndex, totalChunks) {
-            return fetch(`/all-file-flashcards?file_key=${fileKey}`)
+            // Request multiple-choice format if available
+            return fetch(`/all-file-flashcards?file_key=${fileKey}&format=mc`)
                 .then(response => {
                     if (!response.ok) throw new Error('Failed to fetch flashcards');
                     return response.json();
                 })
                 .then(data => {
-                    // Display all flashcards
-                    displayFlashcards(data.flashcards);
+                    // Display all flashcards - passing both formats
+                    displayFlashcards(data.flashcards, data.mc_flashcards);
                     
                     // Update progress indicator with percentage
                     const progress = Math.round((currentIndex + 1) / totalChunks * 100);

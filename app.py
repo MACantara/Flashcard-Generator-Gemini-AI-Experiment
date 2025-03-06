@@ -137,16 +137,26 @@ def file_state():
 def all_file_flashcards():
     """Get all flashcards for a file"""
     file_key = request.args.get('file_key')
+    format_type = request.args.get('format', 'standard')  # 'standard' or 'mc' (multiple-choice)
     
     if not file_key:
         return jsonify({'error': 'File key is required'}), 400
     
-    all_flashcards = ProcessingState.get_all_flashcards(file_key)
-    
-    return jsonify({
-        'flashcards': all_flashcards,
-        'count': len(all_flashcards)
-    })
+    if format_type == 'mc':
+        # Return multiple-choice format if requested
+        mc_flashcards = ProcessingState.get_mc_flashcards(file_key)
+        return jsonify({
+            'flashcards': ProcessingState.get_all_flashcards(file_key),  # For backward compatibility
+            'mc_flashcards': mc_flashcards,
+            'count': len(mc_flashcards)
+        })
+    else:
+        # Return standard format by default
+        all_flashcards = ProcessingState.get_all_flashcards(file_key)
+        return jsonify({
+            'flashcards': all_flashcards,
+            'count': len(all_flashcards)
+        })
 
 @app.route('/')
 def home():

@@ -35,3 +35,9 @@ class FlashcardSet:
     
     def __len__(self) -> int:
         return self._count
+
+class FlashcardGenerator:
+    """Generate and process flashcards"""
+    def __init__(self, client):
+        self.client = client
+        self.unique_cards = FlashcardSet()

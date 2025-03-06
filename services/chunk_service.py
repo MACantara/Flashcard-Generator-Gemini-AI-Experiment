@@ -1,3 +1,5 @@
+import json
+from google.genai import types
 from models import FlashcardGenerator
 from config import Config
 from utils import clean_flashcard_text
@@ -18,24 +20,44 @@ def process_file_chunk_batch(client, file_key, chunk_index):
     generator = FlashcardGenerator(client)
     
     try:
-        # Generate flashcards for this chunk
+        # Generate flashcards for this chunk using the multiple-choice format
+        prompt = Config.generate_prompt_template(f"the following content: {chunk[:200]}...", 
+                                                batch_size=min(20, Config.DEFAULT_BATCH_SIZE))
+        
         response = client.models.generate_content(
             model='gemini-2.0-flash-lite',
-            contents=[{'text': Config.FLASHCARD_GENERATION_PROMPT}, {'text': chunk}],
+            contents=types.Part.from_text(text=prompt),
             config=Config.FLASHCARD_CONFIG
         )
         
-        # Extract flashcards
         chunk_flashcards = []
-        raw_cards = response.text.split('\n')
+        mc_data = []
         
-        for card in raw_cards:
-            if 'Q:' in card and '|' in card and 'A:' in card:
-                cleaned = clean_flashcard_text(card)
-                if cleaned:
-                    chunk_flashcards.append(cleaned)
+        # Try to parse JSON response for multiple-choice format
+        try:
+            flashcards_data = json.loads(response.text)
+            
+            # Format flashcards for compatibility with existing UI
+            for card in flashcards_data:
+                # Format: Q: [question] | A: [correct_answer]
+                formatted_card = f"Q: {card['q']} | A: {card['ca']}"
+                chunk_flashcards.append(formatted_card)
+                mc_data.append(card)
+                
+        except (json.JSONDecodeError, KeyError):
+            # Fallback to legacy format if JSON parsing fails
+            raw_cards = response.text.split('\n')
+            for card in raw_cards:
+                if 'Q:' in card and '|' in card and 'A:' in card:
+                    cleaned = clean_flashcard_text(card)
+                    if cleaned:
+                        chunk_flashcards.append(cleaned)
         
-        # Update state
+        # Store the multiple-choice data if available
+        if mc_data:
+            ProcessingState.append_mc_flashcards(file_key, mc_data)
+            
+        # Also store the formatted cards for backward compatibility
         ProcessingState.append_flashcards(file_key, chunk_flashcards)
         
         # Update processing state
@@ -55,7 +77,8 @@ def process_file_chunk_batch(client, file_key, chunk_index):
             'all_flashcards_count': len(all_flashcards),
             'chunk_index': chunk_index,
             'total_chunks': state['total_chunks'],
-            'is_complete': state['is_complete']
+            'is_complete': state['is_complete'],
+            'has_mc_data': len(mc_data) > 0
         }
         
     except Exception as e:
