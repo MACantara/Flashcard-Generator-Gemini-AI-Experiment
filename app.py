@@ -15,6 +15,8 @@ from dataclasses import dataclass
 
 # For Vercel deployment
 import tempfile
+import hashlib
+import time
 
 app = Flask(__name__)
 load_dotenv()
@@ -306,6 +308,176 @@ def init_app():
 app = Flask(__name__)
 init_app()
 
+class ProcessingState:
+    """Store processing state between requests"""
+    @staticmethod
+    def get_file_key(filepath):
+        """Generate a unique key for a file"""
+        return hashlib.md5(filepath.encode('utf-8')).hexdigest()
+    
+    @staticmethod
+    def init_file_state(filepath):
+        """Initialize processing state for a file"""
+        content = FileProcessor.read_content(filepath)
+        chunks = chunk_text(content)
+        file_key = ProcessingState.get_file_key(filepath)
+        
+        state = {
+            'filepath': filepath,
+            'chunks': chunks,
+            'total_chunks': len(chunks),
+            'processed_chunks': [],
+            'current_index': 0,
+            'all_flashcards': [],
+            'is_complete': False,
+            'has_coverage': False,
+            'last_updated': time.time()
+        }
+        
+        session[file_key] = state
+        return file_key
+    
+    @staticmethod
+    def get_state(file_key):
+        """Get processing state for a file"""
+        return session.get(file_key)
+    
+    @staticmethod
+    def update_state(file_key, updates):
+        """Update processing state for a file"""
+        if file_key in session:
+            state = session[file_key]
+            for key, value in updates.items():
+                state[key] = value
+            state['last_updated'] = time.time()
+            session[file_key] = state
+            return True
+        return False
+    
+    @staticmethod
+    def cleanup_old_states(max_age=3600):  # 1 hour
+        """Remove old processing states"""
+        now = time.time()
+        keys_to_remove = []
+        
+        for key in list(session.keys()):
+            if isinstance(session[key], dict) and 'last_updated' in session[key]:
+                if now - session[key]['last_updated'] > max_age:
+                    keys_to_remove.append(key)
+        
+        for key in keys_to_remove:
+            if session.get(key, {}).get('filepath') and os.path.exists(session[key]['filepath']):
+                try:
+                    os.remove(session[key]['filepath'])
+                except:
+                    pass
+            del session[key]
+
+def process_file_chunk_batch(file_key, chunk_index):
+    """Process a single chunk of a file in batch mode"""
+    state = ProcessingState.get_state(file_key)
+    if not state or state['is_complete'] or chunk_index >= len(state['chunks']):
+        return {'error': 'Invalid state or chunk index'}
+    
+    # Initialize generator for this chunk
+    generator = FlashcardGenerator(client)
+    chunk = state['chunks'][chunk_index]
+    
+    try:
+        # Generate flashcards for this chunk
+        response = client.models.generate_content(
+            model='gemini-2.0-flash-lite',
+            contents=[{'text': Config.FLASHCARD_GENERATION_PROMPT}, {'text': chunk}],
+            config=Config.FLASHCARD_CONFIG
+        )
+        
+        # Extract flashcards
+        chunk_flashcards = []
+        raw_cards = response.text.split('\n')
+        
+        for card in raw_cards:
+            if 'Q:' in card and '|' in card and 'A:' in card:
+                cleaned = clean_flashcard_text(card)
+                if cleaned:
+                    chunk_flashcards.append(cleaned)
+        
+        # Update state
+        all_cards = state['all_flashcards'] + chunk_flashcards
+        state['processed_chunks'].append(chunk_index)
+        state['all_flashcards'] = all_cards
+        state['current_index'] = chunk_index + 1
+        
+        if len(state['processed_chunks']) == state['total_chunks']:
+            state['is_complete'] = True
+        
+        ProcessingState.update_state(file_key, state)
+        
+        return {
+            'flashcards': chunk_flashcards,
+            'all_flashcards_count': len(all_cards),
+            'chunk_index': chunk_index,
+            'total_chunks': state['total_chunks'],
+            'is_complete': state['is_complete']
+        }
+        
+    except Exception as e:
+        print(f"Error processing chunk {chunk_index}: {str(e)}")
+        return {'error': str(e)}
+
+def check_file_coverage(file_key):
+    """Check if the current flashcards provide sufficient coverage"""
+    state = ProcessingState.get_state(file_key)
+    if not state:
+        return {'error': 'Invalid file key'}
+    
+    if len(state['all_flashcards']) == 0:
+        return {'coverage': False, 'message': 'No flashcards generated yet'}
+    
+    try:
+        # Use a sample of content to check coverage
+        content_sample = "\n".join([state['chunks'][i] for i in state['processed_chunks'][:5]])
+        
+        coverage_prompt = Config.COVERAGE_CHECK_PROMPT.format(
+            content=f"Content sample:\n{content_sample}\n\nFlashcards:\n{chr(10).join(state['all_flashcards'][:100])}"
+        )
+        
+        coverage_response = client.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=types.Part.from_text(text=coverage_prompt),
+            config=Config.COVERAGE_CONFIG
+        )
+        
+        has_coverage = coverage_response.text.strip().lower() == 'yes'
+        
+        # Update state
+        state['has_coverage'] = has_coverage
+        ProcessingState.update_state(file_key, state)
+        
+        return {
+            'coverage': has_coverage,
+            'message': 'Coverage is sufficient' if has_coverage else 'Additional flashcards needed'
+        }
+        
+    except Exception as e:
+        print(f"Error checking coverage: {str(e)}")
+        return {'error': str(e)}
+
+def get_file_state(file_key):
+    """Get current processing state for a file"""
+    state = ProcessingState.get_state(file_key)
+    if not state:
+        return {'error': 'Invalid file key'}
+    
+    return {
+        'total_chunks': state['total_chunks'],
+        'processed_chunks': len(state['processed_chunks']),
+        'current_index': state['current_index'],
+        'flashcard_count': len(state['all_flashcards']),
+        'is_complete': state['is_complete'],
+        'has_coverage': state['has_coverage'],
+        'next_chunk': state['current_index'] if state['current_index'] < state['total_chunks'] else None
+    }
+
 @app.route('/upload-file', methods=['POST'])
 def upload_file():
     try:
@@ -334,9 +506,17 @@ def upload_file():
             print(f"File save error: {str(e)}")
             return jsonify({'error': 'Failed to save file'}), 500
         
-        # Store filepath in session
-        session['uploaded_file'] = filepath
-        return jsonify({'success': True, 'filename': filename})
+        # Initialize processing state
+        file_key = ProcessingState.init_file_state(filepath)
+        
+        # Clean up old processing states
+        ProcessingState.cleanup_old_states()
+        
+        return jsonify({
+            'success': True, 
+            'file_key': file_key, 
+            'filename': filename
+        })
         
     except Exception as e:
         print(f"Upload error: {str(e)}")
@@ -384,6 +564,65 @@ def generate_from_file():
     except Exception as e:
         print(f"Error in generate_from_file: {str(e)}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/generate-chunk', methods=['POST'])
+def generate_chunk():
+    """Generate flashcards from a specific chunk of a file"""
+    try:
+        data = request.get_json()
+        file_key = data.get('file_key')
+        chunk_index = data.get('chunk_index')
+        
+        if not file_key:
+            return jsonify({'error': 'File key is required'}), 400
+        
+        state = ProcessingState.get_state(file_key)
+        if not state:
+            return jsonify({'error': 'Invalid file key'}), 400
+        
+        if chunk_index is None:
+            chunk_index = state['current_index']
+        
+        if chunk_index >= state['total_chunks']:
+            return jsonify({
+                'message': 'All chunks processed',
+                'is_complete': True
+            })
+        
+        result = process_file_chunk_batch(file_key, chunk_index)
+        return jsonify(result)
+        
+    except Exception as e:
+        print(f"Error in generate_chunk: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/check-coverage', methods=['POST'])
+def check_coverage():
+    """Check if the current flashcards provide sufficient coverage"""
+    try:
+        data = request.get_json()
+        file_key = data.get('file_key')
+        
+        if not file_key:
+            return jsonify({'error': 'File key is required'}), 400
+        
+        result = check_file_coverage(file_key)
+        return jsonify(result)
+        
+    except Exception as e:
+        print(f"Error in check_coverage: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/file-state', methods=['GET'])
+def file_state():
+    """Get current processing state for a file"""
+    file_key = request.args.get('file_key')
+    
+    if not file_key:
+        return jsonify({'error': 'File key is required'}), 400
+    
+    result = get_file_state(file_key)
+    return jsonify(result)
 
 @app.route('/')
 def home():

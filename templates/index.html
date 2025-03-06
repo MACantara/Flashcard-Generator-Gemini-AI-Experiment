@@ -182,6 +182,7 @@
             });
         });
 
+        // Update file form handling for chunked processing
         $('#fileForm').on('submit', function(e) {
             e.preventDefault();
             $('#loading').show();
@@ -189,30 +190,31 @@
             $('#statsSection').addClass('d-none');
             
             const formData = new FormData(this);
+            let allFlashcards = [];
+            let fileKey = null;
             
-            fetch('/generate-from-file', {
+            // First, upload the file
+            fetch('/upload-file', {
                 method: 'POST',
                 body: formData
             })
             .then(response => {
-                if (!response.ok) {
-                    throw new Error('Network response was not ok');
-                }
+                if (!response.ok) throw new Error('Upload failed');
                 return response.json();
             })
             .then(data => {
-                $('#loading').hide();
+                if (data.error) throw new Error(data.error);
                 
-                // Display cards
-                displayFlashcards(data.flashcards);
-                
-                // Show completion information
+                fileKey = data.file_key;
                 $('#loading').html(`
-                    <div class="alert alert-success">
-                        <i class="bi bi-check-circle"></i>
-                        File processing complete! Generated ${data.count} unique flashcards from ${data.chunks} chunks.
+                    <div class="alert alert-info">
+                        <i class="bi bi-info-circle"></i>
+                        Processing file ${data.filename}... (0%)
                     </div>
                 `).show();
+                
+                // Start processing chunks
+                return processNextChunk(fileKey, allFlashcards);
             })
             .catch(error => {
                 console.error('Error:', error);
@@ -224,6 +226,81 @@
                 `).show();
             });
         });
+        
+        function processNextChunk(fileKey, allFlashcards) {
+            return fetch('/generate-chunk', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ file_key: fileKey })
+            })
+            .then(response => {
+                if (!response.ok) throw new Error('Processing failed');
+                return response.json();
+            })
+            .then(data => {
+                if (data.error) throw new Error(data.error);
+                
+                // Add new flashcards
+                if (data.flashcards) {
+                    allFlashcards = allFlashcards.concat(data.flashcards);
+                    
+                    // Update UI
+                    displayFlashcards(allFlashcards);
+                    
+                    // Update progress
+                    const progress = Math.round((data.chunk_index + 1) / data.total_chunks * 100);
+                    $('#loading').html(`
+                        <div class="alert alert-info">
+                            <i class="bi bi-info-circle"></i>
+                            Processing file... (${progress}%)
+                        </div>
+                    `).show();
+                }
+                
+                // If more chunks to process
+                if (!data.is_complete) {
+                    // Check coverage
+                    return checkCoverage(fileKey, allFlashcards);
+                } else {
+                    // Final coverage check
+                    return checkCoverage(fileKey, allFlashcards, true);
+                }
+            });
+        }
+        
+        function checkCoverage(fileKey, allFlashcards, isFinal = false) {
+            return fetch('/check-coverage', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ file_key: fileKey })
+            })
+            .then(response => {
+                if (!response.ok) throw new Error('Coverage check failed');
+                return response.json();
+            })
+            .then(data => {
+                if (data.error) throw new Error(data.error);
+                
+                // If we have sufficient coverage or this is final check
+                if (data.coverage || isFinal) {
+                    $('#loading').html(`
+                        <div class="alert alert-success">
+                            <i class="bi bi-check-circle"></i>
+                            Processing complete! Generated ${allFlashcards.length} flashcards.
+                            ${data.coverage ? ' Coverage is sufficient.' : ' Coverage may be partial.'}
+                        </div>
+                    `).show();
+                    return Promise.resolve();
+                } else {
+                    // Continue processing more chunks
+                    return processNextChunk(fileKey, allFlashcards);
+                }
+            });
+        }
     </script>
 </body>
 </html>
