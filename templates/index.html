@@ -215,7 +215,12 @@
                 $('#loading').html(`
                     <div class="alert alert-info">
                         <i class="bi bi-info-circle"></i>
-                        Processing file ${data.filename}... (0%)
+                        <p>Processing file ${data.filename}</p>
+                        <p><strong>${data.total_chunks}</strong> chunks to process</p>
+                        <div class="progress mt-2">
+                            <div class="progress-bar" role="progressbar" style="width: 0%;" 
+                                 aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
+                        </div>
                     </div>
                 `).show();
                 
@@ -308,12 +313,17 @@
                     // Display all flashcards
                     displayFlashcards(data.flashcards);
                     
-                    // Update progress indicator
+                    // Update progress indicator with percentage
                     const progress = Math.round((currentIndex + 1) / totalChunks * 100);
                     $('#loading').html(`
                         <div class="alert alert-info">
                             <i class="bi bi-info-circle"></i>
-                            Processing file... (${progress}%) - Generated ${data.count} flashcards so far
+                            <p>Processing file... (${currentIndex + 1}/${totalChunks} chunks)</p>
+                            <p>Generated ${data.count} flashcards so far</p>
+                            <div class="progress mt-2">
+                                <div class="progress-bar" role="progressbar" style="width: ${progress}%;" 
+                                     aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100">${progress}%</div>
+                            </div>
                         </div>
                     `).show();
                 });

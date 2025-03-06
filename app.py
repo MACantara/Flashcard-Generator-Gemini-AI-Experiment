@@ -606,6 +606,7 @@ def upload_file():
         
         # Initialize processing state
         file_key = ProcessingState.init_file_state(filepath)
+        state = ProcessingState.get_state(file_key)
         
         # Clean up old processing states
         ProcessingState.cleanup_old_states()
@@ -613,7 +614,8 @@ def upload_file():
         return jsonify({
             'success': True, 
             'file_key': file_key, 
-            'filename': filename
+            'filename': filename,
+            'total_chunks': state['total_chunks']  # Added total chunks to response
         })
         
     except Exception as e:
